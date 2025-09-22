@@ -45,9 +45,6 @@ export default function PoolSelector({ onSelect }: Props) {
     <div className="card glass p-4">
       <div className="flex flex-col gap-2">
         <label className="text-sm muted">Enter Devnet pool address</label>
-        <p className="text-xs muted">
-          This field expects a <b>DLMM Pool address</b> (not a wallet address). If an invalid pool is used, demo bins will be shown.
-        </p>
 
         <div className="flex gap-2">
           <input
