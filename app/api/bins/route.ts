@@ -1,4 +1,3 @@
-// app/api/bins/route.ts
 import { NextResponse } from "next/server";
 import { fetchDemoBins } from "../../../lib/dlmmClient";
 
@@ -9,37 +8,78 @@ const DEFAULT_DEVNET_POOL =
 
 function isBase58Pubkey(s: string): boolean {
   const base58 = /^[1-9A-HJ-NP-Za-km-z]+$/;
-  return s.length >= 30 && s.length <= 50 && base58.test(s);
+  return s.length >= 30 && s.length <= 60 && base58.test(s);
 }
 
-function extractBin(obj: unknown): BinPoint | null {
-  if (obj === null || typeof obj !== "object") return null;
-  const rec = obj as Record<string, unknown>;
+/** يحوّل عنصرًا واحدًا إلى BinPoint إن أمكن */
+function toBinPoint(x: unknown): BinPoint | null {
+  if (!x || typeof x !== "object") return null;
+  const r = x as Record<string, unknown>;
 
-  const priceCandidate =
-    typeof rec.price === "number"
-      ? rec.price
-      : typeof rec.binPrice === "number"
-      ? rec.binPrice
-      : typeof rec.p === "number"
-      ? rec.p
+  const price =
+    typeof r.price === "number"
+      ? r.price
+      : typeof r.binPrice === "number"
+      ? r.binPrice
+      : typeof r.p === "number"
+      ? r.p
       : null;
 
-  const liqCandidate =
-    typeof rec.liquidity === "number"
-      ? rec.liquidity
-      : typeof rec.binLiquidity === "number"
-      ? rec.binLiquidity
-      : typeof rec.l === "number"
-      ? rec.l
+  const liquidity =
+    typeof r.liquidity === "number"
+      ? r.liquidity
+      : typeof r.binLiquidity === "number"
+      ? r.binLiquidity
+      : typeof r.l === "number"
+      ? r.l
       : null;
 
-  if (priceCandidate == null || liqCandidate == null) return null;
-  const price = Number(priceCandidate);
-  const liquidity = Math.max(0, Number(liqCandidate));
-  if (!Number.isFinite(price) || !Number.isFinite(liquidity)) return null;
+  if (price == null || liquidity == null) return null;
 
-  return { price, liquidity };
+  const P = Number(price);
+  const L = Math.max(0, Number(liquidity));
+  if (!Number.isFinite(P) || !Number.isFinite(L)) return null;
+
+  return { price: P, liquidity: L };
+}
+
+/** يبحث بعمق داخل أي كائن عن مصفوفة bins صالحة */
+function findBinsDeep(x: unknown, depth = 0): BinPoint[] {
+  if (depth > 4 || x == null || typeof x !== "object") return [];
+  // لو كانت مصفوفة في الجذر
+  if (Array.isArray(x)) {
+    const mapped = x.map(toBinPoint).filter((v): v is BinPoint => v !== null);
+    if (mapped.length > 0) return mapped;
+    // أو مصفوفة عناصرها كائنات فيها bins بداخلها (نادر)
+    return [];
+  }
+
+  const r = x as Record<string, unknown>;
+
+  // لو فيه مفتاح bins مباشرة
+  if (Array.isArray(r.bins)) {
+    const m = r.bins
+      .map(toBinPoint)
+      .filter((v): v is BinPoint => v !== null);
+    if (m.length > 0) return m;
+  }
+
+  // أسماء شائعة: data.bins / result.bins / payload.bins
+  for (const key of ["data", "result", "payload", "pair", "pool"]) {
+    const child = r[key];
+    if (child) {
+      const found = findBinsDeep(child, depth + 1);
+      if (found.length > 0) return found;
+    }
+  }
+
+  // فحص بقية المفاتيح (ملاذ أخير)
+  for (const [_, val] of Object.entries(r)) {
+    const found = findBinsDeep(val, depth + 1);
+    if (found.length > 0) return found;
+  }
+
+  return [];
 }
 
 const REVALIDATE_SECONDS = 20;
@@ -54,22 +94,21 @@ export async function GET(req: Request) {
   const poolRaw = (searchParams.get("pool") || DEFAULT_DEVNET_POOL).trim();
   const pool = isBase58Pubkey(poolRaw) ? poolRaw : DEFAULT_DEVNET_POOL;
 
-  // المضيف يختلف بين mainnet/devnet عند Meteora
   const HOST =
     network === "devnet"
       ? "https://devnet-dlmm-api.meteora.ag"
       : "https://dlmm-api.meteora.ag";
 
-  // نجرب عدة مسارات شائعة — أول واحد يشتغل نأخذه
+  // نجرب أكثر من مسار وبنى مختلفة (كائن أو مصفوفة)
   const candidates = [
     `${HOST}/pools/${pool}/bins?network=${network}`,
     `${HOST}/pair/${pool}/bins?network=${network}`,
+    `${HOST}/pair/${pool}?network=${network}`, // بعض الإصدارات ترجع كائن فيه bins
     `${HOST}/pools/bins?address=${pool}&network=${network}`,
   ];
 
-  // مهلة آمنة
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 7000);
+  const timeout = setTimeout(() => controller.abort(), 8000);
 
   try {
     if (!isBase58Pubkey(poolRaw)) {
@@ -88,11 +127,17 @@ export async function GET(req: Request) {
         if (!res.ok) continue;
 
         const data: unknown = await res.json();
-        const mapped: BinPoint[] = Array.isArray(data)
-          ? (data
-              .map((d) => extractBin(d))
-              .filter((x): x is BinPoint => x !== null) as BinPoint[])
-          : [];
+
+        // 1) لو كانت مصفوفة مباشرة
+        let mapped: BinPoint[] = [];
+        if (Array.isArray(data)) {
+          mapped = data
+            .map(toBinPoint)
+            .filter((v): v is BinPoint => v !== null);
+        } else {
+          // 2) ابحث عن bins بعمق داخل الكائن
+          mapped = findBinsDeep(data);
+        }
 
         if (mapped.length > 0) {
           usedUrl = url;
@@ -128,8 +173,7 @@ export async function GET(req: Request) {
     return NextResponse.json(
       {
         source: "fallback-demo",
-        reason:
-          err instanceof Error ? err.message : "Failed to fetch pool bins",
+        reason: err instanceof Error ? err.message : "fetch-failed",
         network,
         pool,
         bins: demo,
