@@ -10,6 +10,11 @@ import {
   Tooltip,
   CartesianGrid,
 } from 'recharts';
+import type { TooltipProps } from 'recharts';
+import type {
+  ValueType,
+  NameType,
+} from 'recharts/types/component/DefaultTooltipContent';
 import {
   fetchDemoBins,
   fetchSolPriceUSDC,
@@ -22,13 +27,31 @@ function getErrMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function PrettyTooltip({ active, label, payload }: any) {
-  if (!active || !payload?.length) return null;
-  const v = payload[0]?.value as number;
+// --- Typed custom tooltip (no "any") ---
+function PrettyTooltip({
+  active,
+  label,
+  payload,
+}: TooltipProps<ValueType, NameType>) {
+  if (!active || !payload || payload.length === 0) return null;
+  const v = payload[0]?.value;
+  const liq =
+    typeof v === 'number'
+      ? v.toLocaleString()
+      : typeof v === 'string'
+      ? v
+      : String(v);
+  const lbl =
+    typeof label === 'number' ? label.toFixed(4) : String(label);
+
   return (
     <div className="rounded-xl bg-slate-900/90 text-white p-2 text-xs shadow-lg border border-slate-700">
-      <div>Price ≈ <b>{typeof label === 'number' ? label.toFixed(4) : label}</b></div>
-      <div>Liquidity: <b>{typeof v === 'number' ? v.toLocaleString() : v}</b></div>
+      <div>
+        Price ≈ <b>{lbl}</b>
+      </div>
+      <div>
+        Liquidity: <b>{liq}</b>
+      </div>
     </div>
   );
 }
