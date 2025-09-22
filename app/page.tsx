@@ -1,4 +1,4 @@
-import DlmmView from "@/components/DlmmView";
+import DlmmView from "../components/DlmmView"; // ← مسار نسبي بدل "@/..."
 
 export default function Home() {
   return (
