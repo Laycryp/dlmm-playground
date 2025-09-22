@@ -11,6 +11,10 @@ import {
 } from '../lib/dlmmClient';
 import PoolSelector from './PoolSelector';
 
+function getErrMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 export default function DlmmView() {
   const { connected } = useWallet();
 
@@ -21,7 +25,6 @@ export default function DlmmView() {
   const [poolAddress, setPoolAddress] = useState<string>('');
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
-  // load price and center demo bins around it (re-usable + refreshable)
   const loadPriceAndBins = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -31,8 +34,8 @@ export default function DlmmView() {
       const demo = await fetchDemoBins(sol);
       setBins(demo);
       setLastUpdated(new Date().toLocaleTimeString());
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to load price');
+    } catch (e: unknown) {
+      setError(getErrMsg(e) ?? 'Failed to load price');
       const demo = await fetchDemoBins();
       setBins(demo);
     } finally {
@@ -40,7 +43,6 @@ export default function DlmmView() {
     }
   }, []);
 
-  // initial load + auto refresh every 30s
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -53,7 +55,6 @@ export default function DlmmView() {
     };
   }, [loadPriceAndBins]);
 
-  // when user selects a pool (stub for now, swaps in real SDK later)
   async function handleLoadPool(addr: string) {
     setPoolAddress(addr);
     setLoading(true);
@@ -61,8 +62,8 @@ export default function DlmmView() {
       const points = await fetchBinsByPoolAddress(addr, price ?? undefined);
       setBins(points);
       setError(null);
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to load pool bins');
+    } catch (e: unknown) {
+      setError(getErrMsg(e) ?? 'Failed to load pool bins');
     } finally {
       setLoading(false);
     }
@@ -104,7 +105,6 @@ export default function DlmmView() {
         </div>
       </div>
 
-      {/* Pool selector */}
       <PoolSelector onSelect={handleLoadPool} />
 
       <div className="card p-6">
@@ -125,7 +125,7 @@ export default function DlmmView() {
 
         {error && <div className="text-xs text-red-600 mb-2">Error: {error}</div>}
 
-        {/* --- Chart (fixed size to guarantee visibility) --- */}
+        {/* Fixed-size chart to guarantee visibility on SSR */}
         <div className="overflow-x-auto">
           <div className="min-w-[720px]">
             <BarChart
@@ -137,15 +137,15 @@ export default function DlmmView() {
               <XAxis
                 dataKey="price"
                 tick={{ fontSize: 10 }}
-                tickFormatter={(v: number) => (typeof v === 'number' ? v.toFixed(2) : String(v))}
+                tickFormatter={(v: number) => v.toFixed(2)}
               />
               <YAxis tick={{ fontSize: 10 }} domain={[0, 'auto']} />
               <Tooltip
-                formatter={(value: any, name: any) => [
+                formatter={(value: number | string, name: string) => [
                   typeof value === 'number' ? value.toLocaleString() : value,
                   name === 'liquidity' ? 'Liquidity' : name,
                 ]}
-                labelFormatter={(label: any) =>
+                labelFormatter={(label: number | string) =>
                   `Price ≈ ${typeof label === 'number' ? label.toFixed(4) : label}`
                 }
               />
