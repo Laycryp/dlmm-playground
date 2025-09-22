@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import "@solana/wallet-adapter-react-ui/styles.css";
 import Providers from "./providers";
-import ThemeToggle from "../components/ThemeToggle"; // ← مسار نسبي
+import ThemeToggle from "../components/ThemeToggle";
 
 export const metadata: Metadata = {
   title: "DLMM Playground — SOL/USDC Bins & Wallet (Devnet)",
@@ -32,6 +32,23 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="h-full">
+      <head>
+        {/* set initial theme ASAP to avoid flicker */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+(function(){
+  try{
+    var saved = localStorage.getItem('theme');
+    var prefers = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var isDark = saved ? saved === 'dark' : prefers;
+    var root = document.documentElement;
+    if (isDark) root.classList.add('dark'); else root.classList.remove('dark');
+  }catch(e){}
+})();`,
+          }}
+        />
+      </head>
       <body className="min-h-screen antialiased">
         <Providers>
           {/* Top bar */}
