@@ -10,11 +10,6 @@ import {
   Tooltip,
   CartesianGrid,
 } from 'recharts';
-import type { TooltipProps } from 'recharts';
-import type {
-  ValueType,
-  NameType,
-} from 'recharts/types/component/DefaultTooltipContent';
 import {
   fetchDemoBins,
   fetchSolPriceUSDC,
@@ -27,22 +22,26 @@ function getErrMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-// --- Typed custom tooltip (no "any") ---
-function PrettyTooltip({
-  active,
-  label,
-  payload,
-}: TooltipProps<ValueType, NameType>) {
+/** Typed tooltip props compatible with our Recharts version */
+type MyTooltipProps = {
+  active?: boolean;
+  label?: number | string;
+  payload?: ReadonlyArray<{ value: number | string }>;
+};
+
+function PrettyTooltip({ active, label, payload }: MyTooltipProps) {
   if (!active || !payload || payload.length === 0) return null;
-  const v = payload[0]?.value;
+
+  const raw = payload[0]?.value;
   const liq =
-    typeof v === 'number'
-      ? v.toLocaleString()
-      : typeof v === 'string'
-      ? v
-      : String(v);
+    typeof raw === 'number'
+      ? raw.toLocaleString()
+      : typeof raw === 'string'
+      ? raw
+      : String(raw);
+
   const lbl =
-    typeof label === 'number' ? label.toFixed(4) : String(label);
+    typeof label === 'number' ? label.toFixed(4) : String(label ?? '');
 
   return (
     <div className="rounded-xl bg-slate-900/90 text-white p-2 text-xs shadow-lg border border-slate-700">
@@ -169,7 +168,6 @@ export default function DlmmView() {
 
         {error && <div className="text-xs text-red-500 mb-2">Error: {error}</div>}
 
-        {/* Fixed-size chart to guarantee visibility on SSR */}
         <div className="overflow-x-auto">
           <div className="min-w-[780px]">
             <BarChart
