@@ -1,6 +1,6 @@
 // app/api/bins/route.ts
 import { NextResponse } from "next/server";
-import { fetchDemoBins } from "@/lib/dlmmClient";
+import { fetchDemoBins } from "../../../lib/dlmmClient"; // ← مسار نسبي صحيح
 
 type AnyJson = Record<string, unknown> | unknown[] | null;
 
@@ -25,10 +25,7 @@ export async function GET(req: Request) {
     const apiUrl = `https://dlmm-api.meteora.ag/pools/${pool}/bins?network=devnet`;
 
     const res = await fetch(apiUrl, {
-      // يتيح الكاش الخفيف على Vercel (ISR-style)
       next: { revalidate: revalidateSeconds },
-      // timeouts معقولة لمنع انتظار طويل
-      // @ts-ignore: fetch on edge/runtime next has default timeouts
     });
 
     if (!res.ok) {
@@ -38,9 +35,6 @@ export async function GET(req: Request) {
     const data: AnyJson = await res.json();
 
     // ===== Mapping مرن للـ bins القادمة من المزود =====
-    // نصمم mapper يسمح بأشكال مختلفة:
-    // توقعات شائعة: [{ price: number, liquidity: number }, ...]
-    // أو [{ price: number, binLiquidity: number }, ...]
     let bins = Array.isArray(data)
       ? data
           .map((d: any) => {
@@ -64,17 +58,14 @@ export async function GET(req: Request) {
 
             if (price == null || liqRaw == null) return null;
 
-            // تأكد أن السيولة موجبة (بعض المزودين يعيدون وحدات أكبر/أصغر)
             const liquidity = Math.max(0, Number(liqRaw));
             return { price: Number(price), liquidity };
           })
           .filter(Boolean)
       : [];
 
-    // لو الـ mapper ما طلع بيانات مفيدة، اعتبرها فشل
     if (!bins.length) throw new Error("Empty/unknown upstream shape");
 
-    // رتّب حسب السعر (اختياري)
     bins.sort((a: any, b: any) => a.price - b.price);
 
     return NextResponse.json(
@@ -87,8 +78,6 @@ export async function GET(req: Request) {
       }
     );
   } catch (err) {
-    // Fallback — الديمو حول آخر سعر معروف/تقريبي
-    // نستخدم الدالة المشتركة (لا تلمس الواجهة)
     const demo = await fetchDemoBins();
     return NextResponse.json(
       {
