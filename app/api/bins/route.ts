@@ -85,6 +85,20 @@ function findBinsDeep(x: unknown, depth = 0): BinPoint[] {
 
 const REVALIDATE_SECONDS = 20;
 
+/** قراءة حقل نصّي آمن من كائن غير معروف */
+function readStringField(
+  obj: unknown,
+  keys: string[]
+): string | undefined {
+  if (!obj || typeof obj !== "object") return undefined;
+  const r = obj as Record<string, unknown>;
+  for (const k of keys) {
+    const v = r[k];
+    if (typeof v === "string") return v;
+  }
+  return undefined;
+}
+
 export async function GET(req: Request) {
   const { searchParams, origin } = new URL(req.url);
 
@@ -184,16 +198,20 @@ export async function GET(req: Request) {
       debug.push({ url: allUrl, status: resAll.status });
 
       if (resAll.ok) {
-        const list: unknown = await resAll.json();
-        // نحاول العثور على عنصر يحمل العنوان
-        const arr = Array.isArray(list) ? list : [];
-        const match =
-          arr.find((it: any) => it?.address === pool) ??
-          arr.find((it: any) => it?.pairAddress === pool) ??
-          arr.find((it: any) => it?.pool_address === pool);
+        const listUnknown: unknown = await resAll.json();
+        const arr: unknown[] = Array.isArray(listUnknown) ? listUnknown : [];
+
+        const match = arr.find((it: unknown) => {
+          const addr = readStringField(it, [
+            "address",
+            "pairAddress",
+            "pool_address",
+          ]);
+          return addr === pool;
+        });
 
         if (match) {
-          // ربما يحوي match نفسه bins:
+          // لو العنصر نفسه يحوي bins
           const fromMatch = findBinsDeep(match);
           if (fromMatch.length > 0) {
             const bins = [...fromMatch].sort((a, b) => a.price - b.price);
@@ -217,7 +235,7 @@ export async function GET(req: Request) {
             );
           }
 
-          // جرّب تفاصيل الزوج نفسه:
+          // تفاصيل الزوج
           const detailUrlA = `${HOST}/pair/${pool}?network=${network}`;
           const resDetail = await fetch(detailUrlA, {
             next: { revalidate: REVALIDATE_SECONDS },
