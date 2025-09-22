@@ -2,24 +2,16 @@
 import { NextResponse } from "next/server";
 import { fetchDemoBins } from "../../../lib/dlmmClient";
 
-/** العنصر النهائي الذي تعيده الـ API لواجهة الرسم */
 type BinPoint = { price: number; liquidity: number };
 
-/** قراءة العنوان الافتراضي من البيئة (إن لم يوجد نستخدم قيمة placeholder) */
 const DEFAULT_DEVNET_POOL =
   process.env.DLMM_DEVNET_POOL?.trim() || "11111111111111111111111111111111";
 
-/** إعدادات عامة */
-const REVALIDATE_SECONDS = 20;
-const UPSTREAM_BASE = "https://dlmm-api.meteora.ag";
-
-/** تحقق بسيط لعنوان base58 بطول منطقي (لـ UI/API) */
 function isBase58Pubkey(s: string): boolean {
   const base58 = /^[1-9A-HJ-NP-Za-km-z]+$/;
   return s.length >= 30 && s.length <= 50 && base58.test(s);
 }
 
-/** استخراج price/liquidity من أشكال شائعة */
 function extractBin(obj: unknown): BinPoint | null {
   if (obj === null || typeof obj !== "object") return null;
   const rec = obj as Record<string, unknown>;
@@ -43,7 +35,6 @@ function extractBin(obj: unknown): BinPoint | null {
       : null;
 
   if (priceCandidate == null || liqCandidate == null) return null;
-
   const price = Number(priceCandidate);
   const liquidity = Math.max(0, Number(liqCandidate));
   if (!Number.isFinite(price) || !Number.isFinite(liquidity)) return null;
@@ -51,76 +42,78 @@ function extractBin(obj: unknown): BinPoint | null {
   return { price, liquidity };
 }
 
+const REVALIDATE_SECONDS = 20;
+
 export async function GET(req: Request) {
   const { searchParams, origin } = new URL(req.url);
 
-  // network اختياري: devnet | mainnet (افتراضي devnet)
   const networkRaw = (searchParams.get("network") || "devnet").toLowerCase();
-  const network: "devnet" | "mainnet" = networkRaw === "mainnet" ? "mainnet" : "devnet";
+  const network: "devnet" | "mainnet" =
+    networkRaw === "mainnet" ? "mainnet" : "devnet";
 
-  // العنوان المطلوب أو الافتراضي
   const poolRaw = (searchParams.get("pool") || DEFAULT_DEVNET_POOL).trim();
   const pool = isBase58Pubkey(poolRaw) ? poolRaw : DEFAULT_DEVNET_POOL;
 
-  // في حال كان الإدخال غير صالح بالكامل نرجّع فورًا الديمو مع سبب واضح
-  if (!isBase58Pubkey(poolRaw)) {
-    const demo = await fetchDemoBins();
-    return NextResponse.json(
-      {
-        source: "fallback-demo",
-        reason: "invalid-pool-address",
-        pool: DEFAULT_DEVNET_POOL,
-        network,
-        bins: demo,
-        binsCount: demo.length,
-        updatedAt: new Date().toISOString(),
-      },
-      {
-        status: 200,
-        headers: {
-          "Cache-Control": "no-store",
-          "x-origin": origin,
-        },
-      }
-    );
-  }
+  // المضيف يختلف بين mainnet/devnet عند Meteora
+  const HOST =
+    network === "devnet"
+      ? "https://devnet-dlmm-api.meteora.ag"
+      : "https://dlmm-api.meteora.ag";
 
-  // طلب upstream مع مهلة
+  // نجرب عدة مسارات شائعة — أول واحد يشتغل نأخذه
+  const candidates = [
+    `${HOST}/pools/${pool}/bins?network=${network}`,
+    `${HOST}/pair/${pool}/bins?network=${network}`,
+    `${HOST}/pools/bins?address=${pool}&network=${network}`,
+  ];
+
+  // مهلة آمنة
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 6000);
+  const timeout = setTimeout(() => controller.abort(), 7000);
 
   try {
-    const apiUrl = `${UPSTREAM_BASE}/pools/${pool}/bins?network=${network}`;
-
-    const res = await fetch(apiUrl, {
-      next: { revalidate: REVALIDATE_SECONDS },
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      throw new Error(`Upstream returned ${res.status}`);
+    if (!isBase58Pubkey(poolRaw)) {
+      throw new Error("invalid-pool-address");
     }
 
-    const data: unknown = await res.json();
+    let usedUrl = "";
+    let bins: BinPoint[] = [];
 
-    // تحويل الاستجابة إلى BinPoint[]
-    const bins: BinPoint[] = Array.isArray(data)
-      ? (data
-          .map((item) => extractBin(item))
-          .filter((x): x is BinPoint => x !== null) as BinPoint[])
-      : [];
+    for (const url of candidates) {
+      try {
+        const res = await fetch(url, {
+          next: { revalidate: REVALIDATE_SECONDS },
+          signal: controller.signal,
+        });
+        if (!res.ok) continue;
 
-    if (bins.length === 0) throw new Error("Empty/unknown upstream shape");
+        const data: unknown = await res.json();
+        const mapped: BinPoint[] = Array.isArray(data)
+          ? (data
+              .map((d) => extractBin(d))
+              .filter((x): x is BinPoint => x !== null) as BinPoint[])
+          : [];
 
-    bins.sort((a, b) => a.price - b.price);
+        if (mapped.length > 0) {
+          usedUrl = url;
+          bins = mapped.sort((a, b) => a.price - b.price);
+          break;
+        }
+      } catch {
+        // جرّب التالي
+      }
+    }
+
+    if (bins.length === 0) throw new Error("no-upstream-candidate-worked");
 
     return NextResponse.json(
       {
         source: "upstream",
-        pool,
         network,
+        pool,
         bins,
         binsCount: bins.length,
+        upstream: usedUrl,
         updatedAt: new Date().toISOString(),
       },
       {
@@ -131,15 +124,14 @@ export async function GET(req: Request) {
       }
     );
   } catch (err) {
-    // Fallback — الديمو عند الفشل
     const demo = await fetchDemoBins();
     return NextResponse.json(
       {
         source: "fallback-demo",
         reason:
           err instanceof Error ? err.message : "Failed to fetch pool bins",
-        pool,
         network,
+        pool,
         bins: demo,
         binsCount: demo.length,
         updatedAt: new Date().toISOString(),
