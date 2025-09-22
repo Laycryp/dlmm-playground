@@ -1,12 +1,44 @@
 // app/api/bins/route.ts
 import { NextResponse } from "next/server";
-import { fetchDemoBins } from "../../../lib/dlmmClient"; // ← مسار نسبي صحيح
+import { fetchDemoBins } from "../../../lib/dlmmClient";
 
-type AnyJson = Record<string, unknown> | unknown[] | null;
+/** شكل العنصر النهائي الذي تعيده الـ API لواجهة الرسم */
+type BinPoint = { price: number; liquidity: number };
 
-const DEFAULT_DEVNET_POOL =
-  // ضع هنا عنوان Devnet حقيقي عندما يتوفر لديك
-  "11111111111111111111111111111111";
+/** عنوان Devnet افتراضي (بدّله عندما يتوفر عندك عنوان حقيقي) */
+const DEFAULT_DEVNET_POOL = "11111111111111111111111111111111";
+
+/** استخراج price/liquidity من أي شكل معروف شائع */
+function extractBin(obj: unknown): BinPoint | null {
+  if (obj === null || typeof obj !== "object") return null;
+  const rec = obj as Record<string, unknown>;
+
+  const priceCandidate =
+    typeof rec.price === "number"
+      ? rec.price
+      : typeof rec.binPrice === "number"
+      ? rec.binPrice
+      : typeof rec.p === "number"
+      ? rec.p
+      : null;
+
+  const liqCandidate =
+    typeof rec.liquidity === "number"
+      ? rec.liquidity
+      : typeof rec.binLiquidity === "number"
+      ? rec.binLiquidity
+      : typeof rec.l === "number"
+      ? rec.l
+      : null;
+
+  if (priceCandidate == null || liqCandidate == null) return null;
+
+  const price = Number(priceCandidate);
+  const liquidity = Math.max(0, Number(liqCandidate));
+  if (!Number.isFinite(price) || !Number.isFinite(liquidity)) return null;
+
+  return { price, liquidity };
+}
 
 /**
  * نحاول إحضار الـ bins من API عام (مثال Meteora DLMM).
@@ -21,7 +53,6 @@ export async function GET(req: Request) {
 
   try {
     // مثال لنقطة نهاية عامة – قد تختلف بحسب مزود الـ DLMM
-    // لو عندك endpoint مؤكد، استبدل URL أدناه ثم اضبط mapping تحت.
     const apiUrl = `https://dlmm-api.meteora.ag/pools/${pool}/bins?network=devnet`;
 
     const res = await fetch(apiUrl, {
@@ -32,41 +63,19 @@ export async function GET(req: Request) {
       throw new Error(`Upstream returned ${res.status}`);
     }
 
-    const data: AnyJson = await res.json();
+    const data: unknown = await res.json();
 
-    // ===== Mapping مرن للـ bins القادمة من المزود =====
-    let bins = Array.isArray(data)
-      ? data
-          .map((d: any) => {
-            const price =
-              typeof d?.price === "number"
-                ? d.price
-                : typeof d?.binPrice === "number"
-                ? d.binPrice
-                : typeof d?.p === "number"
-                ? d.p
-                : null;
-
-            const liqRaw =
-              typeof d?.liquidity === "number"
-                ? d.liquidity
-                : typeof d?.binLiquidity === "number"
-                ? d.binLiquidity
-                : typeof d?.l === "number"
-                ? d.l
-                : null;
-
-            if (price == null || liqRaw == null) return null;
-
-            const liquidity = Math.max(0, Number(liqRaw));
-            return { price: Number(price), liquidity };
-          })
-          .filter(Boolean)
+    // نحاول تحويل استجابة المزود إلى مصفوفة BinPoint[]
+    const bins: BinPoint[] = Array.isArray(data)
+      ? (data
+          .map((item) => extractBin(item))
+          .filter((x): x is BinPoint => x !== null) as BinPoint[])
       : [];
 
-    if (!bins.length) throw new Error("Empty/unknown upstream shape");
+    if (bins.length === 0) throw new Error("Empty/unknown upstream shape");
 
-    bins.sort((a: any, b: any) => a.price - b.price);
+    // ترتيب حسب السعر
+    bins.sort((a, b) => a.price - b.price);
 
     return NextResponse.json(
       { source: "upstream", pool, bins },
@@ -78,14 +87,14 @@ export async function GET(req: Request) {
       }
     );
   } catch (err) {
+    // Fallback — الديمو
     const demo = await fetchDemoBins();
     return NextResponse.json(
       {
         source: "fallback-demo",
         pool,
         bins: demo,
-        error:
-          err instanceof Error ? err.message : "Failed to fetch pool bins",
+        error: err instanceof Error ? err.message : "Failed to fetch pool bins",
       },
       {
         status: 200,
