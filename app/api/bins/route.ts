@@ -2,13 +2,24 @@
 import { NextResponse } from "next/server";
 import { fetchDemoBins } from "../../../lib/dlmmClient";
 
-/** شكل العنصر النهائي الذي تعيده الـ API لواجهة الرسم */
+/** العنصر النهائي الذي تعيده الـ API لواجهة الرسم */
 type BinPoint = { price: number; liquidity: number };
 
-/** عنوان Devnet افتراضي (بدّله عندما يتوفر عندك عنوان حقيقي) */
-const DEFAULT_DEVNET_POOL = "11111111111111111111111111111111";
+/** قراءة العنوان الافتراضي من البيئة (إن لم يوجد نستخدم قيمة placeholder) */
+const DEFAULT_DEVNET_POOL =
+  process.env.DLMM_DEVNET_POOL?.trim() || "11111111111111111111111111111111";
 
-/** استخراج price/liquidity من أي شكل معروف شائع */
+/** إعدادات عامة */
+const REVALIDATE_SECONDS = 20;
+const UPSTREAM_BASE = "https://dlmm-api.meteora.ag";
+
+/** تحقق بسيط لعنوان base58 بطول منطقي (لـ UI/API) */
+function isBase58Pubkey(s: string): boolean {
+  const base58 = /^[1-9A-HJ-NP-Za-km-z]+$/;
+  return s.length >= 30 && s.length <= 50 && base58.test(s);
+}
+
+/** استخراج price/liquidity من أشكال شائعة */
 function extractBin(obj: unknown): BinPoint | null {
   if (obj === null || typeof obj !== "object") return null;
   const rec = obj as Record<string, unknown>;
@@ -40,23 +51,50 @@ function extractBin(obj: unknown): BinPoint | null {
   return { price, liquidity };
 }
 
-/**
- * نحاول إحضار الـ bins من API عام (مثال Meteora DLMM).
- * إن فشلنا لأي سبب: نرجع fallback (demo bins) حتى لا تنكسر الواجهة.
- */
 export async function GET(req: Request) {
   const { searchParams, origin } = new URL(req.url);
-  const pool = (searchParams.get("pool") || DEFAULT_DEVNET_POOL).trim();
 
-  // (اختياري) revalidate بسيط للتقليل من الضغط
-  const revalidateSeconds = 20;
+  // network اختياري: devnet | mainnet (افتراضي devnet)
+  const networkRaw = (searchParams.get("network") || "devnet").toLowerCase();
+  const network: "devnet" | "mainnet" = networkRaw === "mainnet" ? "mainnet" : "devnet";
+
+  // العنوان المطلوب أو الافتراضي
+  const poolRaw = (searchParams.get("pool") || DEFAULT_DEVNET_POOL).trim();
+  const pool = isBase58Pubkey(poolRaw) ? poolRaw : DEFAULT_DEVNET_POOL;
+
+  // في حال كان الإدخال غير صالح بالكامل نرجّع فورًا الديمو مع سبب واضح
+  if (!isBase58Pubkey(poolRaw)) {
+    const demo = await fetchDemoBins();
+    return NextResponse.json(
+      {
+        source: "fallback-demo",
+        reason: "invalid-pool-address",
+        pool: DEFAULT_DEVNET_POOL,
+        network,
+        bins: demo,
+        binsCount: demo.length,
+        updatedAt: new Date().toISOString(),
+      },
+      {
+        status: 200,
+        headers: {
+          "Cache-Control": "no-store",
+          "x-origin": origin,
+        },
+      }
+    );
+  }
+
+  // طلب upstream مع مهلة
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
 
   try {
-    // مثال لنقطة نهاية عامة – قد تختلف بحسب مزود الـ DLMM
-    const apiUrl = `https://dlmm-api.meteora.ag/pools/${pool}/bins?network=devnet`;
+    const apiUrl = `${UPSTREAM_BASE}/pools/${pool}/bins?network=${network}`;
 
     const res = await fetch(apiUrl, {
-      next: { revalidate: revalidateSeconds },
+      next: { revalidate: REVALIDATE_SECONDS },
+      signal: controller.signal,
     });
 
     if (!res.ok) {
@@ -65,7 +103,7 @@ export async function GET(req: Request) {
 
     const data: unknown = await res.json();
 
-    // نحاول تحويل استجابة المزود إلى مصفوفة BinPoint[]
+    // تحويل الاستجابة إلى BinPoint[]
     const bins: BinPoint[] = Array.isArray(data)
       ? (data
           .map((item) => extractBin(item))
@@ -74,35 +112,48 @@ export async function GET(req: Request) {
 
     if (bins.length === 0) throw new Error("Empty/unknown upstream shape");
 
-    // ترتيب حسب السعر
     bins.sort((a, b) => a.price - b.price);
 
     return NextResponse.json(
-      { source: "upstream", pool, bins },
+      {
+        source: "upstream",
+        pool,
+        network,
+        bins,
+        binsCount: bins.length,
+        updatedAt: new Date().toISOString(),
+      },
       {
         headers: {
-          "Cache-Control": `max-age=0, s-maxage=${revalidateSeconds}`,
+          "Cache-Control": `max-age=0, s-maxage=${REVALIDATE_SECONDS}, stale-while-revalidate=30`,
           "x-origin": origin,
         },
       }
     );
   } catch (err) {
-    // Fallback — الديمو
+    // Fallback — الديمو عند الفشل
     const demo = await fetchDemoBins();
     return NextResponse.json(
       {
         source: "fallback-demo",
+        reason:
+          err instanceof Error ? err.message : "Failed to fetch pool bins",
         pool,
+        network,
         bins: demo,
-        error: err instanceof Error ? err.message : "Failed to fetch pool bins",
+        binsCount: demo.length,
+        updatedAt: new Date().toISOString(),
       },
       {
         status: 200,
         headers: {
           "Cache-Control": "no-store",
           "x-fallback": "true",
+          "x-origin": origin,
         },
       }
     );
+  } finally {
+    clearTimeout(timeout);
   }
 }
