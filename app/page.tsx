@@ -1,5 +1,5 @@
 // app/page.tsx
-import DlmmView from "@/components/DlmmView";
+import DlmmView from "../components/DlmmView"; // ← مسار نسبي بدل "@/components/…"
 
 export default function Page() {
   return (
