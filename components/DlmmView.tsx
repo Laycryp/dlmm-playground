@@ -46,8 +46,7 @@ export default function DlmmView() {
       setBins(demo);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (e: unknown) {
-      const message =
-        e instanceof Error ? e.message : 'Failed to load price';
+      const message = e instanceof Error ? e.message : 'Failed to load price';
       setError(message);
       const demo = await fetchDemoBins();
       setBins(demo);
@@ -91,8 +90,12 @@ export default function DlmmView() {
     void handleLoadPool(addr);
   };
 
-  // tooltip أبسط
-  function PrettyTooltip({ active, label, payload }: TooltipProps<number, string>) {
+  // ----- Tooltip typing fix -----
+  type LocalTooltipProps = TooltipProps<number, string> & {
+    label?: number | string;
+  };
+
+  function PrettyTooltip({ active, label, payload }: LocalTooltipProps) {
     if (!active || !payload || payload.length === 0) return null;
     const first = payload[0];
     return (
@@ -102,6 +105,7 @@ export default function DlmmView() {
       </div>
     );
   }
+  // --------------------------------
 
   const headerRight = useMemo(
     () => (
