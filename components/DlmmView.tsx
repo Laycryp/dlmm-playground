@@ -11,14 +11,14 @@ import {
   Tooltip,
   CartesianGrid,
 } from 'recharts';
-import ThemeToggle from '@/components/ThemeToggle';
-import ConnectWallet from '@/components/ConnectWallet';
-import PoolSelector from '@/components/PoolSelector';
+import ThemeToggle from './ThemeToggle';
+import ConnectWallet from './ConnectWallet';
+import PoolSelector from './PoolSelector';
 import {
   fetchDemoBins,
   fetchBinsByPoolAddress,
   fetchSolPriceUSDC,
-} from '@/lib/dlmmClient';
+} from '../lib/dlmmClient';
 
 type BinPoint = { price: number; liquidity: number };
 
