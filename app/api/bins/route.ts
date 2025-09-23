@@ -1,206 +1,209 @@
 // app/api/bins/route.ts
 import { NextResponse } from "next/server";
+import DLMM from "@meteora-ag/dlmm";
+import { Connection, PublicKey, clusterApiUrl, Cluster } from "@solana/web3.js";
 import { fetchDemoBins } from "../../../lib/dlmmClient";
 
 type BinPoint = { price: number; liquidity: number };
 
-type PairLite = {
-  address: string;
-  tokenX?: string;
-  tokenY?: string;
-  symbol?: string;
-  // قد لا تتوفر دائمًا:
-  binStep?: number;
-  activeId?: number;
-  currentPrice?: number;
-};
+// افتراضي Devnet
+const DEFAULT_DEVNET_POOL =
+  process.env.DLMM_DEVNET_POOL?.trim() ||
+  "35pqwzfx5qbifizJhe9VjuMJMV3Ut8bVHyn4nZvmC25R";
 
-type UpTry = { url: string; status?: number; err?: string; bins?: number };
+const REVALIDATE_SECONDS = 15;
 
-const DEFAULT_DEVNET_POOL = "11111111111111111111111111111111";
-const REVALIDATE_SECONDS = 20;
-
-function extractBin(obj: unknown): BinPoint | null {
-  if (obj === null || typeof obj !== "object") return null;
-  const rec = obj as Record<string, unknown>;
-
-  const priceCandidate =
-    typeof rec.price === "number"
-      ? rec.price
-      : typeof rec.binPrice === "number"
-      ? rec.binPrice
-      : typeof rec.p === "number"
-      ? rec.p
-      : null;
-
-  const liqCandidate =
-    typeof rec.liquidity === "number"
-      ? rec.liquidity
-      : typeof rec.binLiquidity === "number"
-      ? rec.binLiquidity
-      : typeof rec.l === "number"
-      ? rec.l
-      : null;
-
-  if (priceCandidate == null || liqCandidate == null) return null;
-
-  const price = Number(priceCandidate);
-  const liquidity = Math.max(0, Number(liqCandidate));
-  if (!Number.isFinite(price) || !Number.isFinite(liquidity)) return null;
-
-  return { price, liquidity };
+function isBase58Pubkey(s: string): boolean {
+  const base58 = /^[1-9A-HJ-NP-Za-km-z]+$/;
+  return s.length >= 30 && s.length <= 60 && base58.test(s);
 }
 
-async function tryJson(url: string): Promise<{ ok: boolean; status: number; data?: unknown }> {
-  const res = await fetch(url, { next: { revalidate: REVALIDATE_SECONDS } });
-  const status = res.status;
-  if (!res.ok) return { ok: false, status };
-  try {
-    const data = (await res.json()) as unknown;
-    return { ok: true, status, data };
-  } catch {
-    return { ok: false, status };
-  }
+function toCluster(networkRaw: string): Cluster | "localhost" {
+  const n = networkRaw.toLowerCase();
+  if (n === "mainnet" || n === "mainnet-beta") return "mainnet-beta";
+  if (n === "testnet") return "testnet";
+  if (n === "localhost") return "localhost";
+  return "devnet";
 }
 
-/** يحاول جلب بيانات bins من REST. يرجع BinPoint[] أو null */
-async function fetchBinsFromRest(pool: string): Promise<{
-  bins: BinPoint[] | null;
-  tried: UpTry[];
-}> {
-  const tried: UpTry[] = [];
-  const base = "https://devnet-dlmm-api.meteora.ag";
+function toNumber(x: unknown): number | undefined {
+  return typeof x === "number" && Number.isFinite(x) ? x : undefined;
+}
 
-  // 1) محاولات مباشرة (في بعض الإصدارات قد توجد)
-  const candidatesDirect = [
-    `${base}/pools/${pool}/bins?network=devnet`,
-    `${base}/pair/${pool}/bins?network=devnet`,
-    `${base}/pair/${pool}?network=devnet`,
-    `${base}/pools/bins?address=${pool}&network=devnet`,
-    // cluster بدلاً من network
-    `${base}/pools/${pool}/bins?cluster=devnet`,
-    `${base}/pair/${pool}/bins?cluster=devnet`,
-    `${base}/pair/${pool}?cluster=devnet`,
-    `${base}/pools/bins?address=${pool}&cluster=devnet`,
-  ];
+function mapSdkBin(x: unknown): BinPoint | null {
+  if (!x || typeof x !== "object") return null;
+  const r = x as Record<string, unknown>;
 
-  for (const url of candidatesDirect) {
-    try {
-      const res = await tryJson(url);
-      tried.push({ url, status: res.status });
-      if (!res.ok || !res.data) continue;
+  // السعر يمكن أن يأتي بأسماء مختلفة
+  const price =
+    toNumber(r.price) ??
+    toNumber((r as Record<string, unknown>)["binPrice"]) ??
+    toNumber((r as Record<string, unknown>)["p"]) ??
+    toNumber((r as Record<string, unknown>)["pricePerLamport"]);
 
-      // إذا كانت مصفوفة تحوي price/liquidity مباشرة
-      if (Array.isArray(res.data)) {
-        const bins = res.data
-          .map((x) => extractBin(x))
-          .filter((x): x is BinPoint => x !== null);
-        if (bins.length > 0) {
-          bins.sort((a, b) => a.price - b.price);
-          return { bins, tried };
-        }
-      }
+  // السيولة قد تأتي X/Y أو إجمالي
+  const lx =
+    toNumber(r.amountX) ??
+    toNumber((r as Record<string, unknown>)["xAmount"]) ??
+    toNumber((r as Record<string, unknown>)["x"]);
+  const ly =
+    toNumber(r.amountY) ??
+    toNumber((r as Record<string, unknown>)["yAmount"]) ??
+    toNumber((r as Record<string, unknown>)["y"]);
 
-      // لو كان كائن فيه حقل bins كمصفوفة
-      if (
-        res.data &&
-        typeof res.data === "object" &&
-        Array.isArray((res.data as Record<string, unknown>).bins)
-      ) {
-        const raw = (res.data as Record<string, unknown>).bins as unknown[];
-        const bins = raw
-          .map((x) => extractBin(x))
-          .filter((x): x is BinPoint => x !== null);
-        if (bins.length > 0) {
-          bins.sort((a, b) => a.price - b.price);
-          return { bins, tried };
-        } else {
-          // سجّل أن الرد يحوي bins=0
-          tried[tried.length - 1].bins = 0;
-        }
-      }
-    } catch (e) {
-      tried.push({ url, err: (e as Error).message });
-    }
-  }
+  const liquidity =
+    toNumber(r.liquidity) ??
+    (lx !== undefined || ly !== undefined ? (lx ?? 0) + (ly ?? 0) : undefined);
 
-  // 2) قائمة كل الأزواج للعثور على المسبح المطلوب (قد نستفيد لاحقًا)
-  const listUrl = `${base}/pair/all`;
-  try {
-    const res = await tryJson(listUrl);
-    tried.push({ url: listUrl, status: res.status });
-    if (res.ok && Array.isArray(res.data)) {
-      const list = res.data as unknown[];
-      const match = list.find((it) => {
-        if (!it || typeof it !== "object") return false;
-        const address =
-          typeof (it as Record<string, unknown>).address === "string"
-            ? ((it as Record<string, unknown>).address as string)
-            : "";
-        return address === pool;
-      });
-      if (!match) {
-        tried.push({ url: listUrl, err: "pool-not-found-in-list" });
-      } else {
-        // بعض واجهات REST لا تعيد bins مباشرة — نكتفي بإثبات الوجود
-        // ونترك مهمة جلب التوزيع للـ SDK لاحقًا. الآن سنرجع null ليتم استخدام fallback.
-      }
-    }
-  } catch (e) {
-    tried.push({ url: listUrl, err: (e as Error).message });
-  }
-
-  return { bins: null, tried };
+  if (price === undefined || liquidity === undefined) return null;
+  return { price, liquidity: Math.max(0, liquidity) };
 }
 
 export async function GET(req: Request) {
   const { searchParams, origin } = new URL(req.url);
-  const pool = (searchParams.get("pool") || DEFAULT_DEVNET_POOL).trim() || DEFAULT_DEVNET_POOL;
 
-  // network ثابت هنا Devnet (يمكن لاحقًا دعم mainnet)
-  const network = "devnet" as const;
+  // الشبكة
+  const networkRaw = (searchParams.get("network") || "devnet").toLowerCase();
+  const cluster: Cluster | "localhost" = toCluster(networkRaw);
 
-  // (أ) جرّب REST أولًا
-  const rest = await fetchBinsFromRest(pool);
+  // المسبح
+  const poolRaw = (searchParams.get("pool") || DEFAULT_DEVNET_POOL).trim();
+  const pool = isBase58Pubkey(poolRaw) ? poolRaw : DEFAULT_DEVNET_POOL;
 
-  if (rest.bins && rest.bins.length > 0) {
+  // نصف القطر حول الـ active bin
+  const radius = Math.max(
+    5,
+    Math.min(100, Number(searchParams.get("radius") || "25"))
+  );
+
+  // RPC لكل شبكة
+  const rpc =
+    cluster === "devnet"
+      ? process.env.SOLANA_RPC_DEVNET || clusterApiUrl("devnet")
+      : cluster === "testnet"
+      ? process.env.SOLANA_RPC_TESTNET || clusterApiUrl("testnet")
+      : cluster === "localhost"
+      ? process.env.SOLANA_RPC_LOCALHOST || "http://127.0.0.1:8899"
+      : process.env.SOLANA_RPC_MAINNET || clusterApiUrl("mainnet-beta");
+
+  try {
+    const connection = new Connection(rpc, "confirmed");
+    // 1) أنشئ كائن DLMM من عنوان المسبح
+    const dlmm = await DLMM.create(connection, new PublicKey(pool), {
+      cluster,
+    });
+
+    // 2) احصل على الـ active bin للحصول على binId
+    const active = await dlmm.getActiveBin();
+    // غالبًا الحقل binId أو activeBinId (نغطي الاحتمالين)
+    const activeId =
+      (active as Record<string, unknown>)["binId"] ??
+      (active as Record<string, unknown>)["activeBinId"];
+    if (typeof activeId !== "number" || !Number.isFinite(activeId)) {
+      throw new Error("could-not-read-active-bin-id");
+    }
+
+    // 3) احصل على مجموعة من الـ bins حول الـ active
+    // ملاحظة: توقيع الدالة في SDK يتطلب (activeBinId, numberOfBins)
+    const aroundUnknown: unknown = await dlmm.getBinsAroundActiveBin(
+      activeId as number,
+      radius
+    );
+
+    const bins =
+      Array.isArray(aroundUnknown)
+        ? (aroundUnknown
+            .map((b) => mapSdkBin(b))
+            .filter((b): b is BinPoint => b !== null) as BinPoint[])
+        : [];
+
+    if (bins.length > 0) {
+      bins.sort((a, b) => a.price - b.price);
+      return NextResponse.json(
+        {
+          source: "upstream-sdk",
+          network: cluster,
+          pool,
+          bins,
+          binsCount: bins.length,
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          headers: {
+            "Cache-Control": `max-age=0, s-maxage=${REVALIDATE_SECONDS}`,
+            "x-origin": origin,
+          },
+        }
+      );
+    }
+
+    // 4) إن لم يعدّ شيئًا — جرب getBinArrays كبديل
+    const arraysUnknown: unknown = await dlmm.getBinArrays();
+    const fromArrays =
+      Array.isArray(arraysUnknown)
+        ? (arraysUnknown
+            .flatMap((arrItem) => {
+              if (!arrItem || typeof arrItem !== "object") return [];
+              const rr = arrItem as Record<string, unknown>;
+              const candidates = [
+                rr.bins,
+                (rr as Record<string, unknown>)["entries"],
+                (rr as Record<string, unknown>)["items"],
+              ].filter((c) => Array.isArray(c)) as unknown[][];
+              return candidates.flat();
+            })
+            .map((x) => mapSdkBin(x))
+            .filter((x): x is BinPoint => x !== null) as BinPoint[])
+        : [];
+
+    if (fromArrays.length > 0) {
+      const sorted = [...fromArrays].sort((a, b) => a.price - b.price);
+      return NextResponse.json(
+        {
+          source: "upstream-sdk",
+          method: "getBinArrays",
+          network: cluster,
+          pool,
+          bins: sorted,
+          binsCount: sorted.length,
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          headers: {
+            "Cache-Control": `max-age=0, s-maxage=${REVALIDATE_SECONDS}`,
+            "x-origin": origin,
+          },
+        }
+      );
+    }
+
+    // 5) fallback لو لم ينجح أي مسار
+    const demo = await fetchDemoBins();
     return NextResponse.json(
       {
-        source: "upstream",
-        network,
+        source: "fallback-demo",
+        reason: "sdk-returned-empty",
+        network: cluster,
         pool,
-        bins: rest.bins,
-        binsCount: rest.bins.length,
+        bins: demo,
+        binsCount: demo.length,
         updatedAt: new Date().toISOString(),
       },
+      { headers: { "Cache-Control": "no-store" } }
+    );
+  } catch (err) {
+    const demo = await fetchDemoBins();
+    return NextResponse.json(
       {
-        headers: {
-          "Cache-Control": `max-age=0, s-maxage=${REVALIDATE_SECONDS}`,
-          "x-origin": origin,
-        },
-      }
+        source: "fallback-demo",
+        reason: err instanceof Error ? err.message : "sdk-failed",
+        network: cluster,
+        pool,
+        bins: demo,
+        binsCount: demo.length,
+        updatedAt: new Date().toISOString(),
+      },
+      { headers: { "Cache-Control": "no-store" } }
     );
   }
-
-  // (ب) لم ننجح — ارجع ديمو نظيف بدل كسر الواجهة
-  const demo = await fetchDemoBins();
-  return NextResponse.json(
-    {
-      source: "fallback-demo",
-      reason: "no-upstream-candidate-worked",
-      network,
-      pool,
-      bins: demo,
-      binsCount: demo.length,
-      updatedAt: new Date().toISOString(),
-      upstreamTried: rest.tried,
-    },
-    {
-      status: 200,
-      headers: {
-        "Cache-Control": "no-store",
-        "x-fallback": "true",
-      },
-    }
-  );
 }
