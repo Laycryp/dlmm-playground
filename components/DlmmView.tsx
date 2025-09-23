@@ -32,7 +32,7 @@ export default function DlmmView() {
   const [poolAddress, setPoolAddress] = useState<string>('');
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
-  /** اختر الشبكة المعروضة في البطاقة */
+  /** الشبكة المعروضة في البطاقة */
   const NETWORK: 'devnet' | 'mainnet' = 'devnet';
 
   const loadPriceAndBins = useCallback(async () => {
@@ -80,7 +80,7 @@ export default function DlmmView() {
     void handleLoadPool(addr);
   };
 
-  // ---- Tooltip: نوع بسيط مخصّص بدل TooltipProps لتفادي أخطاء TS ----
+  // ---- Tooltip: نوع بسيط لتفادي مشاكل TS مع Recharts ----
   type SimpleTooltipPayloadItem = { value?: number | string };
   type SimpleTooltipProps = {
     active?: boolean;
@@ -98,8 +98,9 @@ export default function DlmmView() {
       </div>
     );
   }
-  // -------------------------------------------------------------------
+  // -------------------------------------------------------
 
+  // نستخدم نفس عناصر الهيدر (الثيم + المحفظة) إذا احتجتها لاحقًا
   const headerRight = useMemo(
     () => (
       <div className="flex items-center gap-2">
@@ -109,15 +110,10 @@ export default function DlmmView() {
     ),
     []
   );
+  void headerRight; // لمنع تحذير unused إن لم يُستخدم
 
   return (
     <section className="w-full space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="h1">DLMM Playground</h1>
-        {headerRight}
-      </div>
-
       {/* Info cards */}
       <div className="grid gap-4 md:grid-cols-3">
         <div className="card p-5">
