@@ -1,20 +1,40 @@
-# DLMM Playground (Devnet/Mainnet)
+# DLMM Playground (Devnet)
 
-A tiny demo UI to explore DLMM Liquidity Bins on Solana.
-- Connect Phantom wallet
-- SOL/USDC price with manual refresh
-- Paste DLMM **Pool Address** and render **Liquidity Bins**
-- Light/Dark theme, responsive
-- Deployed on Vercel
+A minimal, clean UI to explore **DLMM Liquidity Bins** on Solana **Devnet**, with:
+- Phantom wallet connect
+- Live SOL/USDC price + refresh
+- Liquidity bins bar chart
+- Light/Dark theme toggle
+- Safe **fallback demo** bins when upstream DLMM data isn’t available
 
-> Bins fetched from Meteora DLMM indexer (when available).
-> If upstream is empty/unavailable, we render **synthetic demo bins** as fallback to keep the UI stable.
+**Live Demo:** https://www.laycryp.com  
+**Repository:** https://github.com/Laycryp/dlmm-playground
 
-## Live
-- https://YOUR-DOMAIN-HERE
+---
 
-## Run locally
+## ✨ Features
+- Connect Phantom wallet (Devnet)
+- Live SOL price in USDC with a Refresh button
+- Liquidity Bins visualized as a purple bar chart (recharts)
+- Example pool shortcuts field (Devnet)
+- Light/Dark mode
+- Resilient UX: if SDK/REST cannot fetch bins, a local demo dataset is shown
+
+> Note: For the hackathon scope, data is shown on **Devnet** and gracefully falls back to demo bins whenever upstream endpoints are unavailable or restricted.
+
+---
+
+## 🛠️ Tech Stack
+- Next.js (App Router)
+- TypeScript
+- Tailwind CSS
+- `recharts`
+- `@solana/wallet-adapter-react` (+ Phantom)
+
+---
+
+## 🚀 Local Development
 ```bash
-npm install
-cp .env.example .env.local
+npm i
 npm run dev
+# open http://localhost:3000
