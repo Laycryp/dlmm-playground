@@ -1,0 +1,21 @@
+
+---
+
+## 🧾 Short Submission Blurb (English — paste into the form)
+
+> **DLMM Playground** — A small Devnet UI to explore DLMM liquidity bins on Solana. It supports Phantom connect, live SOL/USDC price, Light/Dark theme, 
+and a clean bins histogram. When DLMM upstream is unavailable, we fall back to a demo dataset so the interface never breaks. Built with Next.js, TypeScript, Tailwind, recharts, and Solana wallet adapter.  
+> **Live:** https://www.laycryp.com — **Repo:** https://github.com/Laycryp/dlmm-playground
+
+---
+
+## 🔍 Final Checklist
+- [x] Live demo opens and shows header (theme toggle + Select Wallet)
+- [x] Wallet connect works on Devnet
+- [x] SOL price displays and refreshes
+- [x] Liquidity bins chart renders (and demo bins appear if upstream fails)
+- [x] README updated (English) with live + repo links
+- [x] Latest Vercel deployment is green
+
+If you want me to sanity-check the live page one last time, say the word.
+::contentReference[oaicite:0]{index=0}
