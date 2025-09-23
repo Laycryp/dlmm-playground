@@ -1,14 +1,14 @@
 // app/api/bins/route.ts
 import { NextResponse } from "next/server";
 import DLMM from "@meteora-ag/dlmm";
-import { Connection, PublicKey, clusterApiUrl } from "@solana/web3.js";
+import { Connection, PublicKey, clusterApiUrl, Cluster } from "@solana/web3.js";
 import { fetchDemoBins } from "../../../lib/dlmmClient";
 
 type BinPoint = { price: number; liquidity: number };
 
 const DEFAULT_DEVNET_POOL =
   process.env.DLMM_DEVNET_POOL?.trim() ||
-  "35pqwzfx5qbifizJhe9VjuMJMV3Ut8bVHyn4nZvmC25R"; // العنوان الذي زوّدتني به
+  "35pqwzfx5qbifizJhe9VjuMJMV3Ut8bVHyn4nZvmC25R";
 
 const REVALIDATE_SECONDS = 15;
 
@@ -25,14 +25,12 @@ function binFromSdk(obj: unknown): BinPoint | null {
   if (!obj || typeof obj !== "object") return null;
   const r = obj as Record<string, unknown>;
 
-  // السعر قد يأتي باسم price أو pricePerLamport أو binPrice … نعالج أشهر الأسماء
   const price =
     toNumber(r.price) ??
     toNumber(r.pricePerLamport) ??
     toNumber(r.binPrice) ??
     toNumber((r as Record<string, unknown>)["p"]);
 
-  // السيولة: بعض الدوال ترجّع amountX/amountY، وأحيانًا totalLiquidity
   const lx =
     toNumber(r.amountX) ??
     toNumber((r as Record<string, unknown>)["xAmount"]) ??
@@ -41,44 +39,57 @@ function binFromSdk(obj: unknown): BinPoint | null {
     toNumber(r.amountY) ??
     toNumber((r as Record<string, unknown>)["yAmount"]) ??
     toNumber((r as Record<string, unknown>)["y"]);
+
   const liquidity =
     toNumber(r.liquidity) ??
     (lx !== undefined || ly !== undefined ? (lx ?? 0) + (ly ?? 0) : undefined);
 
   if (price === undefined || liquidity === undefined) return null;
-
   return { price, liquidity: Math.max(0, liquidity) };
+}
+
+/** يحوّل قيمة network القادمة من الكويري إلى Cluster صالح للـ SDK */
+function toCluster(networkRaw: string): Cluster | "localhost" {
+  const n = networkRaw.toLowerCase();
+  if (n === "mainnet" || n === "mainnet-beta") return "mainnet-beta";
+  if (n === "testnet") return "testnet";
+  if (n === "localhost") return "localhost";
+  return "devnet";
 }
 
 export async function GET(req: Request) {
   const { searchParams, origin } = new URL(req.url);
 
   const networkRaw = (searchParams.get("network") || "devnet").toLowerCase();
-  const network: "devnet" | "mainnet" =
-    networkRaw === "mainnet" ? "mainnet" : "devnet";
+  const cluster: Cluster | "localhost" = toCluster(networkRaw);
 
   const poolRaw = (searchParams.get("pool") || DEFAULT_DEVNET_POOL).trim();
   const pool = isBase58Pubkey(poolRaw) ? poolRaw : DEFAULT_DEVNET_POOL;
 
-  // RPC مناسب لـ Vercel
+  // RPC مناسب لكل شبكة
   const rpc =
-    network === "devnet"
+    cluster === "devnet"
       ? process.env.SOLANA_RPC_DEVNET || clusterApiUrl("devnet")
-      : process.env.SOLANA_RPC_MAINNET ||
-        "https://api.mainnet-beta.solana.com";
+      : cluster === "testnet"
+      ? process.env.SOLANA_RPC_TESTNET || clusterApiUrl("testnet")
+      : cluster === "localhost"
+      ? process.env.SOLANA_RPC_LOCALHOST || "http://127.0.0.1:8899"
+      : process.env.SOLANA_RPC_MAINNET || clusterApiUrl("mainnet-beta");
 
-  const radius =
-    Number(searchParams.get("radius") || "25"); // كم bin حول الـ active
+  const radius = Math.max(
+    5,
+    Math.min(100, Number(searchParams.get("radius") || "25"))
+  );
 
   try {
     const connection = new Connection(rpc, "confirmed");
     const dlmm = await DLMM.create(connection, new PublicKey(pool), {
-      cluster: network,
+      cluster, // ← الآن نوع متوافق: "devnet" | "testnet" | "mainnet-beta" | "localhost"
     });
 
-    // جرّب أولًا Bins حول الـ active bin
+    // 1) جرّب حول الـ active bin
     const aroundUnknown: unknown = await dlmm.getBinsAroundActiveBin({
-      numberOfBins: Math.max(5, Math.min(100, radius)),
+      numberOfBins: radius,
     });
 
     const mappedA = Array.isArray(aroundUnknown)
@@ -93,7 +104,7 @@ export async function GET(req: Request) {
         {
           source: "upstream-sdk",
           method: "getBinsAroundActiveBin",
-          network,
+          network: cluster,
           pool,
           bins: binsSorted,
           binsCount: binsSorted.length,
@@ -108,7 +119,7 @@ export async function GET(req: Request) {
       );
     }
 
-    // بديل: إن ما رجّع شيء، جرّب getBinArrays (قد تحتاجه لبعض المسابح)
+    // 2) بديل: getBinArrays
     const arraysUnknown: unknown = await dlmm.getBinArrays();
     const fromArrays =
       Array.isArray(arraysUnknown)
@@ -116,7 +127,6 @@ export async function GET(req: Request) {
             .flatMap((arrItem) => {
               if (!arrItem || typeof arrItem !== "object") return [];
               const rr = arrItem as Record<string, unknown>;
-              // حاول تلقّط أي مصفوفة داخلية اسمها bins/entries/… إلخ
               const candidates = [
                 rr.bins,
                 (rr as Record<string, unknown>)["entries"],
@@ -134,7 +144,7 @@ export async function GET(req: Request) {
         {
           source: "upstream-sdk",
           method: "getBinArrays",
-          network,
+          network: cluster,
           pool,
           bins: binsSorted,
           binsCount: binsSorted.length,
@@ -149,13 +159,13 @@ export async function GET(req: Request) {
       );
     }
 
-    // لو ما قدرنا نستخرج — fallback ديمو
+    // 3) لو لم نجد شيئًا — رجوع للديمو
     const demo = await fetchDemoBins();
     return NextResponse.json(
       {
         source: "fallback-demo",
         reason: "sdk-returned-empty",
-        network,
+        network: cluster,
         pool,
         bins: demo,
         binsCount: demo.length,
@@ -168,9 +178,8 @@ export async function GET(req: Request) {
     return NextResponse.json(
       {
         source: "fallback-demo",
-        reason:
-          err instanceof Error ? err.message : "sdk-failed",
-        network,
+        reason: err instanceof Error ? err.message : "sdk-failed",
+        network: cluster,
         pool,
         bins: demo,
         binsCount: demo.length,
