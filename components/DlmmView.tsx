@@ -9,7 +9,7 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  TooltipProps,
+  CartesianGrid,
 } from 'recharts';
 
 import ThemeToggle from './ThemeToggle';
@@ -32,10 +32,9 @@ export default function DlmmView() {
   const [poolAddress, setPoolAddress] = useState<string>('');
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
-  /** ثابت بسيط للشبكة التي نعرضها */
+  /** اختر الشبكة المعروضة في البطاقة */
   const NETWORK: 'devnet' | 'mainnet' = 'devnet';
 
-  // تحميل السعر + داتا الديمو
   const loadPriceAndBins = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -45,9 +44,8 @@ export default function DlmmView() {
       const demo = await fetchDemoBins(sol);
       setBins(demo);
       setLastUpdated(new Date().toLocaleTimeString());
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : 'Failed to load price';
-      setError(message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load price');
       const demo = await fetchDemoBins();
       setBins(demo);
     } finally {
@@ -55,20 +53,13 @@ export default function DlmmView() {
     }
   }, []);
 
-  // التحميل الأول + تحديث كل 30 ثانية
   useEffect(() => {
     let mounted = true;
-    (async () => {
-      if (mounted) await loadPriceAndBins();
-    })();
+    (async () => { if (mounted) await loadPriceAndBins(); })();
     const id = setInterval(loadPriceAndBins, 30_000);
-    return () => {
-      mounted = false;
-      clearInterval(id);
-    };
+    return () => { mounted = false; clearInterval(id); };
   }, [loadPriceAndBins]);
 
-  // جلب bins لعنوان pool
   async function handleLoadPool(addr: string) {
     setPoolAddress(addr);
     setLoading(true);
@@ -76,36 +67,38 @@ export default function DlmmView() {
       const points = await fetchBinsByPoolAddress(addr, price ?? undefined);
       setBins(points);
       setError(null);
-    } catch (e: unknown) {
-      const message =
-        e instanceof Error ? e.message : 'Failed to load pool bins';
-      setError(message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load pool bins');
+      const demo = await fetchDemoBins(price ?? undefined);
+      setBins(demo);
     } finally {
       setLoading(false);
     }
   }
 
-  // مُغلِّف غير async ليتوافق مع onSelect: (address) => void
   const handleSelectPool = (addr: string) => {
     void handleLoadPool(addr);
   };
 
-  // ----- Tooltip typing fix -----
-  type LocalTooltipProps = TooltipProps<number, string> & {
+  // ---- Tooltip: نوع بسيط مخصّص بدل TooltipProps لتفادي أخطاء TS ----
+  type SimpleTooltipPayloadItem = { value?: number | string };
+  type SimpleTooltipProps = {
+    active?: boolean;
     label?: number | string;
+    payload?: SimpleTooltipPayloadItem[];
   };
 
-  function PrettyTooltip({ active, label, payload }: LocalTooltipProps) {
+  function PrettyTooltip({ active, label, payload }: SimpleTooltipProps) {
     if (!active || !payload || payload.length === 0) return null;
-    const first = payload[0];
+    const v = payload[0]?.value;
     return (
-      <div className="rounded-md bg-slate-900/90 px-3 py-2 text-xs text-white shadow">
+      <div className="rounded-md bg-slate-900/90 px-3 py-2 text-xs text-white shadow dark:bg-slate-900/90">
         <div>Price ≈ {label}</div>
-        <div>Liquidity: {first.value}</div>
+        <div>Liquidity: {v}</div>
       </div>
     );
   }
-  // --------------------------------
+  // -------------------------------------------------------------------
 
   const headerRight = useMemo(
     () => (
@@ -118,14 +111,14 @@ export default function DlmmView() {
   );
 
   return (
-    <section className="w-full space-y-4">
-      {/* العنوان + أزرار الثيم والمحفظة */}
+    <section className="w-full space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="h1">DLMM Playground</h1>
         {headerRight}
       </div>
 
-      {/* بطاقات المعلومات */}
+      {/* Info cards */}
       <div className="grid gap-4 md:grid-cols-3">
         <div className="card p-5">
           <div className="text-sm muted mb-1">Network</div>
@@ -134,11 +127,7 @@ export default function DlmmView() {
 
         <div className="card p-5">
           <div className="text-sm muted mb-1">Wallet</div>
-          <div
-            className={`font-semibold ${
-              connected ? 'text-green-500' : 'text-red-500'
-            }`}
-          >
+          <div className={`font-semibold ${connected ? 'text-green-500' : 'text-red-500'}`}>
             {connected ? 'Connected' : 'Not connected'}
           </div>
         </div>
@@ -150,9 +139,7 @@ export default function DlmmView() {
               <div className="font-semibold">
                 {price ? price.toFixed(4) : loading ? 'Loading…' : '—'}
               </div>
-              {lastUpdated && (
-                <div className="text-xs muted">Updated: {lastUpdated}</div>
-              )}
+              {lastUpdated && <div className="text-xs muted">Updated: {lastUpdated}</div>}
             </div>
             <button
               className="btn btn-outline"
@@ -166,61 +153,52 @@ export default function DlmmView() {
         </div>
       </div>
 
-      {/* محدد الـ Pool — نمرّر الشبكة المطلوبة */}
+      {/* Pool selector */}
       <PoolSelector network={NETWORK} onSelect={handleSelectPool} />
 
-      {/* الرسم البياني */}
+      {/* Chart */}
       <div className="card p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold">
             Liquidity Bins{' '}
-            {poolAddress ? (
-              <span className="text-xs muted">
-                — Pool: {poolAddress.slice(0, 4)}…{poolAddress.slice(-4)}
-              </span>
-            ) : null}
+            {poolAddress && (
+              <span className="text-xs muted">— Pool: {poolAddress.slice(0,4)}…{poolAddress.slice(-4)}</span>
+            )}
           </h2>
           <div className="flex gap-3">
-            <input
-              className="border rounded-xl px-3 py-2 text-sm bg-transparent"
-              defaultValue="SOL"
-              aria-label="Token A"
-            />
-            <input
-              className="border rounded-xl px-3 py-2 text-sm bg-transparent"
-              defaultValue="USDC"
-              aria-label="Token B"
-            />
+            <input className="border rounded-xl px-3 py-2 text-sm bg-transparent" defaultValue="SOL" />
+            <input className="border rounded-xl px-3 py-2 text-sm bg-transparent" defaultValue="USDC" />
           </div>
         </div>
 
         {error && <div className="text-xs text-red-500 mb-2">Error: {error}</div>}
 
-        <div className="h-64">
+        <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={bins} margin={{ left: 10, right: 10 }}>
+              <defs>
+                <linearGradient id="binGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#c084fc" />
+                  <stop offset="100%" stopColor="#8b5cf6" />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.2} />
               <XAxis dataKey="price" tick={{ fontSize: 10 }} />
               <YAxis tick={{ fontSize: 10 }} />
               <Tooltip content={<PrettyTooltip />} />
-              {/* أعمدة بنفسجية */}
-              <Bar dataKey="liquidity" fill="#8B5CF6" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="liquidity" fill="url(#binGradient)" radius={[6, 6, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
 
         <p className="text-xs muted mt-2">
-          If the upstream DLMM endpoint can’t be reached or the pool is empty,
-          synthetic bins are shown as a fallback.
+          If upstream (SDK/REST) can’t be reached or the pool is empty, synthetic bins are shown as a fallback.
         </p>
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <button className="btn btn-primary" disabled={!connected}>
-          Add Liquidity
-        </button>
-        <button className="btn btn-outline" disabled={!connected}>
-          Swap
-        </button>
+        <button className="btn btn-primary" disabled={!connected}>Add Liquidity</button>
+        <button className="btn btn-outline" disabled={!connected}>Swap</button>
       </div>
     </section>
   );
